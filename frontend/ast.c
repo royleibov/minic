@@ -56,7 +56,7 @@ void freeFunc(astNode *node){
 	
 	free(node->func.name);
 	if (node->func.param != NULL)
-		freeVar(node->func.param);
+		freeDecl(node->func.param);
 
 	freeBlock(node->func.body);
 	

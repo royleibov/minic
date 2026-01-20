@@ -36,7 +36,7 @@ astNode* root;
 %nonassoc UMINUS
 
 /* Non-terminal types */
-%type <nPtr> program extern_decl func_def param_decl block stmt expr
+%type <nPtr> program extern_decl func_def func_param_decl block stmt expr
 %type <nPtrList> decl_list stmt_list
 
 %%
@@ -51,13 +51,13 @@ extern_decl:
     ;
 
 func_def:
-      INT IDENT '(' param_decl ')' block    { $$ = createFunc($2, $4, $6);
+      INT IDENT '(' func_param_decl ')' block    { $$ = createFunc($2, $4, $6);
                                               free($2); }
     ;
 
-param_decl:
+func_param_decl:
       /* empty */                           { $$ = NULL; }
-    | INT IDENT                             { $$ = createVar($2); free($2); }
+    | INT IDENT                             { $$ = createDecl($2); free($2); }
     ;
 
 block:
