@@ -1,5 +1,5 @@
 CXX = g++
-CXXFLAGS = -g -std=c++11 -Wno-write-strings
+CXXFLAGS = -g -std=c++11
 
 all: parser
 

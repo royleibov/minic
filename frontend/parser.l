@@ -5,7 +5,7 @@ letter    [A-Za-z]
     #include<stdio.h>
     #include "ast.h"
     #include "y.tab.h"
-    extern int yyerror(char *s);
+    extern int yyerror(const char *s);
 %}
 %%
     /* reserved words */

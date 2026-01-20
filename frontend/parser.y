@@ -12,7 +12,7 @@ extern FILE *yyin;
 
 int semantic_analysis(astNode* root);
 
-int yyerror(char*);
+int yyerror(const char*);
 extern int yylineno;
 astNode* root;
 %}
@@ -114,7 +114,7 @@ expr:
     ;
 
 %%
-int yyerror(char *s) {
+int yyerror(const char *s) {
     fprintf(stderr, "line %d: %s\n", yylineno, s);
     return 0;
 }
