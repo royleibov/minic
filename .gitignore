@@ -1,0 +1,29 @@
+# Compiled Object files
+*.o
+*.obj
+
+# Executables
+*.exe
+*.out
+
+# Lex/Flex generated files
+lex.yy.c
+
+# Yacc/Bison generated files
+y.tab.c
+y.tab.h
+
+# Debugging/Listing files (optional, but often generated)
+*.output
+*.log
+
+# Dependency files (if using certain build systems)
+*.d
+
+# OS and Editor files
+.DS_Store         # macOS
+Thumbs.db         # Windows
+*.swp             # Vim swap files
+.vscode/          # VS Code settings
+.idea/            # IntelliJ/CLion settings
+build/            # Common build directory
