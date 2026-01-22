@@ -6,6 +6,10 @@
 *.exe
 *.out
 
+# GDB Debugger files
+*.gdb
+.nfs*
+
 # Lex/Flex generated files
 lex.yy.c
 

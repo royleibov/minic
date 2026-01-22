@@ -6,10 +6,46 @@
 
 /* local helper functions */
 char * get_indent_str(int n){
-	char * ret = (char *) calloc(n+1, sizeof(char));
-	for (int i=0; i < n; i++)
-		ret[i] = ' ';
+	if (n == 0) {
+		char *ret = (char *) calloc(1, sizeof(char));
+		return ret;
+	}
+	/* Each level: "|  " (3 chars), final level ends with "|--" (3 chars) */
+	int len = (n - 1) * 3 + 3;
+	char *ret = (char *) calloc(len + 1, sizeof(char));
+	int pos = 0;
+	for (int i = 0; i < n - 1; i++) {
+		ret[pos++] = '|';
+		ret[pos++] = ' ';
+		// ret[pos++] = ' ';
+	}
+	ret[pos++] = '|';
+	ret[pos++] = '-';
+	ret[pos++] = '-';
 	return ret;
+}
+
+const char* rop_to_str(rop_type op){
+	switch(op){
+		case lt: return "<";
+		case le: return "<=";
+		case gt: return ">";
+		case ge: return ">=";
+		case eq: return "==";
+		case neq: return "!=";
+		default: return "unknown";
+	}
+}
+
+const char* op_to_str(op_type op){
+	switch(op){
+		case add: return "+";
+		case sub: return "-";
+		case mul: return "*";
+		case divide: return "/";
+		case uminus: return "uminus";
+		default: return "unknown";
+	}
 }
 
 /* create and free functions for ast_prog type astNode */
@@ -488,19 +524,19 @@ void printNode(astNode *node, int n){
 						 break;
 					  }
 		case ast_rexpr: {
-						printf("%sRExpr: \n", indent);
+						printf("%sRExpr: %s\n", indent, rop_to_str(node->rexpr.op));
 						printNode(node->rexpr.lhs, n+1);
 						printNode(node->rexpr.rhs, n+1);
 						break;
 					  }
 		case ast_bexpr: {
-						printf("%sBExpr: \n", indent);
+						printf("%sBExpr: %s\n", indent, op_to_str(node->bexpr.op));
 						printNode(node->bexpr.lhs, n+1);
 						printNode(node->bexpr.rhs, n+1);
 						break;
 					  }
 		case ast_uexpr: {
-						printf("%sUExpr: \n", indent);
+						printf("%sUExpr: %s\n", indent, op_to_str(node->uexpr.op));
 						printNode(node->uexpr.expr, n+1);
 						break;
 					  }

@@ -12,7 +12,7 @@ letter    [A-Za-z]
 ">="            return GE;
 "<="            return LE;
 "=="            return EQ;
-"!="            return NE;
+"!="            return NEQ;
 "while"         return WHILE;
 "if"            return IF;
 "else"          return ELSE;
