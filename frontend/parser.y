@@ -17,7 +17,7 @@ extern FILE *yyin;
 
 int semantic_analysis(astNode* root);
 int search_variable(string var_name, vector<unordered_set<string>> *symbol_table_stack);
-int build_symbol_table(astNode* node, vector<unordered_set<string>> *symbol_table_stack);
+int build_symbol_table(astNode* node, vector<unordered_set<string>> *symbol_table_stack, int extend);
 
 int yyerror(const char*);
 extern int yylineno;
@@ -141,7 +141,7 @@ int search_variable(string var_name, vector<unordered_set<string>> *symbol_table
     return 0; // Not found
 }
 
-int build_symbol_table(astNode* node, vector<unordered_set<string>> *symbol_table_stack) {
+int build_symbol_table(astNode* node, vector<unordered_set<string>> *symbol_table_stack, int extend = 0) {
     if (node == NULL) {
         return 0;
     }
@@ -163,20 +163,23 @@ int build_symbol_table(astNode* node, vector<unordered_set<string>> *symbol_tabl
             case ast_block:
                             if (stmt->block.stmt_list != NULL) {
                                 // Push a new symbol table for the block scope
-                                symbol_table_stack->push_back(unordered_set<string>());
+                                if (extend == 0)
+                                    symbol_table_stack->push_back(unordered_set<string>());
 
                                 // Traverse each statement in the block
                                 int rc = 0;
                                 for (auto statement : *stmt->block.stmt_list) {
                                     rc = rc || build_symbol_table(statement, symbol_table_stack);
                                     if (rc != 0) {
-                                        symbol_table_stack->pop_back();
+                                        if (extend == 0)
+                                            symbol_table_stack->pop_back();
                                         return rc;
                                     }
                                 }
 
                                 // Pop the symbol table after exiting the block scope
-                                symbol_table_stack->pop_back();
+                                if (extend == 0)
+                                    symbol_table_stack->pop_back();
                             }
                             return 0; // No statements to process
             case ast_while: {
@@ -223,8 +226,8 @@ int build_symbol_table(astNode* node, vector<unordered_set<string>> *symbol_tabl
             case ast_decl:	
                             if (stmt->decl.name != NULL) {
                                 string var_name = stmt->decl.name;
-                                // Check for redeclaration in the current scope
-                                if (search_variable(var_name, symbol_table_stack) > 0) {
+                                // Check for redeclaration in the current scope only
+                                if (symbol_table_stack->back().count(var_name) > 0) {
                                     fprintf(stderr, "Semantic error: Redeclaration of variable '%s'\n", var_name.c_str());
                                     return 1; // Error
                                 }
@@ -255,7 +258,7 @@ int build_symbol_table(astNode* node, vector<unordered_set<string>> *symbol_tabl
                                 int param_success = build_symbol_table(node->func.param, symbol_table_stack);
 
                                 if (node->func.body != NULL) {
-                                    int body_success = build_symbol_table(node->func.body, symbol_table_stack);
+                                    int body_success = build_symbol_table(node->func.body, symbol_table_stack, 1);
                                     // Pop the symbol table after exiting the function scope
                                     symbol_table_stack->pop_back();
                                     return param_success || body_success;
