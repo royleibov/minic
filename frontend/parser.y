@@ -141,7 +141,7 @@ int search_variable(string var_name, vector<unordered_set<string>> *symbol_table
     return 0; // Not found
 }
 
-int build_symbol_table(astNode* node, vector<unordered_set<string>> *symbol_table_stack, int extend = 0) {
+int build_symbol_table(astNode* node, vector<unordered_set<string>> *symbol_table_stack, int extend = 0) { // c++ allows for parameter default values!
     if (node == NULL) {
         return 0;
     }
