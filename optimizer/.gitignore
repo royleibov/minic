@@ -1,0 +1,3 @@
+optimizer
+*.o
+llvm_parser.c
