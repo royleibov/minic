@@ -242,6 +242,73 @@ int deadcodeElimination(LLVMModuleRef module) {
 	else return 0; // No changes made
 }
 
+// ---- Constant folding ----
+
+int constantFolding(LLVMModuleRef module) {
+	bool changed = false;
+
+	for (LLVMValueRef function =  LLVMGetFirstFunction(module); 
+			function; 
+			function = LLVMGetNextFunction(function)) {
+
+		for (LLVMBasicBlockRef basicBlock = LLVMGetFirstBasicBlock(function);
+ 			 basicBlock;
+  			 basicBlock = LLVMGetNextBasicBlock(basicBlock)) {
+
+			for (LLVMValueRef inst = LLVMGetFirstInstruction(basicBlock); inst;
+  					inst = LLVMGetNextInstruction(inst)) {
+
+				// check if the instruction involves only constants and is a binary operator
+				if (LLVMIsABinaryOperator(inst) && LLVMGetFirstUse(inst) != NULL) {
+					LLVMValueRef op1 = LLVMGetOperand(inst, 0);
+					LLVMValueRef op2 = LLVMGetOperand(inst, 1);
+
+					if (LLVMIsAConstantInt(op1) && LLVMIsAConstantInt(op2)) {
+						changed = true;
+						LLVMValueRef foldedConst = NULL;
+
+						LLVMOpcode opcode = LLVMGetInstructionOpcode(inst);
+
+						switch (opcode) {
+							case LLVMAdd:
+								foldedConst = LLVMConstAdd(op1, op2);
+								break;
+							case LLVMSub:
+								foldedConst = LLVMConstSub(op1, op2);
+								break;
+							case LLVMMul:
+								foldedConst = LLVMConstMul(op1, op2);
+								break;
+							default:
+								// Not a supported binary operator for folding
+								printf("Unsupported opcode for constant folding: %u\n", opcode);
+								break;
+						}
+
+						if (foldedConst != NULL) {
+							LLVMReplaceAllUsesWith(inst, foldedConst);
+							if (DEBUGGING) {
+								printf("Folded constant expression:\n");
+								LLVMDumpValue(inst);
+								printf("\n into:\n");
+								LLVMDumpValue(foldedConst);
+								printf("\n");
+								printf("New Basic Block after constant folding:\n");
+								LLVMDumpValue(LLVMBasicBlockAsValue(basicBlock));
+							}
+						} else {
+							changed = false; // No folding occurred
+						}
+					}
+				}		
+			}
+		}
+ 	}
+
+	if (changed) return 1; // Indicate that we made changes
+	else return 0; // No changes made
+}
+
 int main(int argc, char** argv)
 {
 	LLVMModuleRef m;
@@ -255,10 +322,22 @@ int main(int argc, char** argv)
 	}
 
 	if (m != NULL){
-        int changed = subexprElimination(m);
-		printf("Subexpression elimination made changes: %s\n", changed ? "Yes" : "No");
-		changed = deadcodeElimination(m);
-		printf("Dead code elimination made changes: %s\n", changed ? "Yes" : "No");
+		// Loop until no more changes
+		int changed = 1;
+		while (changed) {
+			printf("Starting optimization iteration...\n");
+			int subexprChanged = subexprElimination(m);
+			printf("Subexpression elimination made changes: %s\n", subexprChanged ? "Yes" : "No");
+			int deadcodeChanged = deadcodeElimination(m);
+			printf("Dead code elimination made changes: %s\n", deadcodeChanged ? "Yes" : "No");
+			int constantFoldingChanged = 1;
+			while (constantFoldingChanged) {
+				constantFoldingChanged = constantFolding(m);
+				printf("Constant folding made changes: %s\n", constantFoldingChanged ? "Yes" : "No");
+			}
+			changed = subexprChanged || deadcodeChanged || constantFoldingChanged;
+		}
+		LLVMDumpModule(m);
     }
 
 	return 0;
