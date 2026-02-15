@@ -6,7 +6,9 @@
 #include <llvm-c/Types.h>
 
 #include <unordered_set>
+#include <unordered_map>
 #include <list>
+#include <vector>
 using namespace std;
 
 #define DEBUGGING 1
@@ -104,9 +106,9 @@ int subexprElimination(LLVMModuleRef module){
  			 basicBlock;
   			 basicBlock = LLVMGetNextBasicBlock(basicBlock)) {
 
-            if (DEBUGGING) {
-                printf("In basic block\n");
-            }
+            // if (DEBUGGING) {
+            //     printf("In basic block\n");
+            // }
 
             // Walk through instructions
             for (LLVMValueRef inst = LLVMGetFirstInstruction(basicBlock); inst;
@@ -264,7 +266,6 @@ int constantFolding(LLVMModuleRef module) {
 					LLVMValueRef op2 = LLVMGetOperand(inst, 1);
 
 					if (LLVMIsAConstantInt(op1) && LLVMIsAConstantInt(op2)) {
-						changed = true;
 						LLVMValueRef foldedConst = NULL;
 
 						LLVMOpcode opcode = LLVMGetInstructionOpcode(inst);
@@ -287,6 +288,7 @@ int constantFolding(LLVMModuleRef module) {
 
 						if (foldedConst != NULL) {
 							LLVMReplaceAllUsesWith(inst, foldedConst);
+							changed = true;
 							if (DEBUGGING) {
 								printf("Folded constant expression:\n");
 								LLVMDumpValue(inst);
@@ -296,11 +298,218 @@ int constantFolding(LLVMModuleRef module) {
 								printf("New Basic Block after constant folding:\n");
 								LLVMDumpValue(LLVMBasicBlockAsValue(basicBlock));
 							}
-						} else {
-							changed = false; // No folding occurred
 						}
 					}
 				}		
+			}
+		}
+ 	}
+
+	if (changed) return 1; // Indicate that we made changes
+	else return 0; // No changes made
+}
+
+// ---- Global constant propagation ----
+
+// Structure to hold all dataflow sets for a basic block
+struct BBDataflow {
+    unordered_set<LLVMValueRef> genSet;
+    unordered_set<LLVMValueRef> killSet;
+    unordered_set<LLVMValueRef> inSet;
+    unordered_set<LLVMValueRef> outSet;
+};
+
+int constantPropagation(LLVMModuleRef module) {
+	bool changed = false;
+
+	for (LLVMValueRef function =  LLVMGetFirstFunction(module); 
+			function; 
+			function = LLVMGetNextFunction(function)) {
+
+		// set of all store instructions in the function
+		unordered_set<LLVMValueRef> allStores;
+		for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(function);
+			bb;
+			bb = LLVMGetNextBasicBlock(bb)) {
+			
+			for (LLVMValueRef inst = LLVMGetFirstInstruction(bb); 
+				inst;
+				inst = LLVMGetNextInstruction(inst)) {
+				
+				if (LLVMIsAStoreInst(inst)) {
+					allStores.insert(inst);
+				}
+			}
+		}
+
+		unordered_map<LLVMBasicBlockRef, BBDataflow> bbDataflows; // map from basic block to its dataflow sets
+
+		// Create GEN and KILL sets for each basic block
+		for (LLVMBasicBlockRef basicBlock = LLVMGetFirstBasicBlock(function);
+ 			 basicBlock;
+  			 basicBlock = LLVMGetNextBasicBlock(basicBlock)) {
+
+			BBDataflow& dataflow = bbDataflows[basicBlock];
+			
+			for (LLVMValueRef inst = LLVMGetFirstInstruction(basicBlock); inst;
+  					inst = LLVMGetNextInstruction(inst)) {
+
+				if (LLVMIsAStoreInst(inst)) {
+					LLVMValueRef storeAddr = LLVMGetOperand(inst, 1); // Store
+
+					// Check if this store kills any previous stores in the gen set, if so, remove them from gen set
+					for (auto it = dataflow.genSet.begin(); it != dataflow.genSet.end(); ) {
+						LLVMValueRef genStore = *it;
+						LLVMValueRef genStoreAddr = LLVMGetOperand(genStore, 1);
+						if (operandsEqual(storeAddr, genStoreAddr)) {
+							it = dataflow.genSet.erase(it);  // erase returns iterator to next element
+						} else {
+							++it;  // only increment if we didn't erase
+						}
+					}
+
+					// Check if this store kills any previous stores to the same address
+					for (LLVMValueRef prevStore : allStores) {
+						LLVMValueRef prevStoreAddr = LLVMGetOperand(prevStore, 1);
+						if (prevStore != inst && operandsEqual(storeAddr, prevStoreAddr)) {
+							dataflow.killSet.insert(prevStore);
+						}
+					}
+
+					dataflow.genSet.insert(inst);
+					allStores.insert(inst);
+				}
+			}
+		}
+
+		// Iteratively compute IN and OUT sets until convergence
+		bool setsChanged = true;
+		while (setsChanged) {
+			setsChanged = false;
+
+			for (LLVMBasicBlockRef basicBlock = LLVMGetFirstBasicBlock(function);
+ 			 basicBlock;
+  			 basicBlock = LLVMGetNextBasicBlock(basicBlock)) {
+
+				BBDataflow& dataflow = bbDataflows[basicBlock];
+
+				unordered_set<LLVMValueRef> oldOutSet = dataflow.outSet;
+
+				// OUT[B] = GEN[B] U (IN[B] - KILL[B])
+				unordered_set<LLVMValueRef> newOutSet = dataflow.genSet;
+				for (LLVMValueRef inStore : dataflow.inSet) {
+					if (dataflow.killSet.find(inStore) == dataflow.killSet.end()) {
+						newOutSet.insert(inStore);
+					}
+				}
+				dataflow.outSet = newOutSet;
+
+				if (dataflow.outSet != oldOutSet) {
+					setsChanged = true;
+
+					// Push change to successors: IN[S] = U OUT[P] for all predecessors P of successor S
+					LLVMValueRef terminator = LLVMGetBasicBlockTerminator(basicBlock);
+					unsigned numSuccessors = LLVMGetNumSuccessors(terminator);
+					for (unsigned i = 0; i < numSuccessors; i++) {
+						LLVMBasicBlockRef succ = LLVMGetSuccessor(terminator, i);
+
+						BBDataflow& succDataflow = bbDataflows[succ];
+						succDataflow.inSet.insert(dataflow.outSet.begin(), dataflow.outSet.end());
+					}
+				}
+			}
+		}
+
+		// Replace loads with constants
+		for (LLVMBasicBlockRef basicBlock = LLVMGetFirstBasicBlock(function);
+ 			 basicBlock;
+  			 basicBlock = LLVMGetNextBasicBlock(basicBlock)) {
+
+			BBDataflow& dataflow = bbDataflows[basicBlock];
+			unordered_set<LLVMValueRef> R = dataflow.inSet;
+
+			list<LLVMValueRef> toDelete; // List of instructions to delete after iteration
+
+			for (LLVMValueRef inst = LLVMGetFirstInstruction(basicBlock); inst;
+  					inst = LLVMGetNextInstruction(inst)) {
+
+				if (LLVMIsAStoreInst(inst)) {
+					LLVMValueRef storeAddr = LLVMGetOperand(inst, 1); // Store
+
+					// Remove any store to the same address from R
+					for (auto it = R.begin(); it != R.end(); ) {
+						LLVMValueRef store = *it;
+						LLVMValueRef addr = LLVMGetOperand(store, 1);
+						if (operandsEqual(storeAddr, addr)) {
+							it = R.erase(it);  // erase returns iterator to next element
+						} else {
+							++it;  // only increment if we didn't erase
+						}
+					}
+
+					// Add it to R
+					R.insert(inst);
+				} else if (LLVMIsALoadInst(inst)) {
+					LLVMValueRef loadAddr = LLVMGetOperand(inst, 0); // Load
+
+					// Find all stores in R that store to the same address
+					vector<LLVMValueRef> matchingStores;
+					for (LLVMValueRef store : R) {
+						LLVMValueRef storeAddr = LLVMGetOperand(store, 1);
+						if (operandsEqual(loadAddr, storeAddr)) {
+							matchingStores.push_back(store);
+						}
+					}
+
+					if (matchingStores.size() > 0) {
+						// check that all stores are a constant
+						bool allConstant = true;
+						vector<LLVMValueRef> constValues;
+						for (LLVMValueRef store : matchingStores) {
+							LLVMValueRef value = LLVMGetOperand(store, 0);
+							if (LLVMIsAConstantInt(value)) {
+								constValues.push_back(value);
+							} else {
+								allConstant = false;
+								break;
+							}
+						}
+
+						// If all matching stores are constants and have the same value, replace load with that constant
+						if (allConstant) {
+							bool allSameValue = true;
+							LLVMValueRef firstValue = constValues[0]; // Guaranteed to exist since matchingStores is not empty
+							for (LLVMValueRef value : constValues) {
+								if (!operandsEqual(value, firstValue)) {
+									allSameValue = false;
+									break;
+								}
+							}
+
+							if (allSameValue) {
+								changed = true;
+								toDelete.push_back(inst); // Mark instruction for deletion
+								LLVMReplaceAllUsesWith(inst, firstValue);
+								if (DEBUGGING) {
+									printf("Propagated constant value:\n");
+									LLVMDumpValue(firstValue);
+									printf("\n into:\n");
+									LLVMDumpValue(inst);
+									printf("\n");
+								}
+							}
+						}
+					}
+				}
+			}
+
+			// Delete instructions
+			for (LLVMValueRef inst : toDelete) {
+				LLVMInstructionEraseFromParent(inst);
+			}
+			if (DEBUGGING && !toDelete.empty()) {
+				printf("New Basic Block after constant propagation:\n");
+				LLVMDumpValue(LLVMBasicBlockAsValue(basicBlock));
 			}
 		}
  	}
@@ -325,17 +534,24 @@ int main(int argc, char** argv)
 		// Loop until no more changes
 		int changed = 1;
 		while (changed) {
+			changed = 0;
 			printf("Starting optimization iteration...\n");
 			int subexprChanged = subexprElimination(m);
 			printf("Subexpression elimination made changes: %s\n", subexprChanged ? "Yes" : "No");
 			int deadcodeChanged = deadcodeElimination(m);
 			printf("Dead code elimination made changes: %s\n", deadcodeChanged ? "Yes" : "No");
 			int constantFoldingChanged = 1;
-			while (constantFoldingChanged) {
+			int constantPropagationChanged = 1;
+			while (constantFoldingChanged || constantPropagationChanged) {
 				constantFoldingChanged = constantFolding(m);
 				printf("Constant folding made changes: %s\n", constantFoldingChanged ? "Yes" : "No");
+				constantPropagationChanged = constantPropagation(m);
+				printf("Constant propagation made changes: %s\n", constantPropagationChanged ? "Yes" : "No");
+				if (constantFoldingChanged || constantPropagationChanged) {
+					changed = 1; // If either made changes, we need to check again for more opportunities
+				}
 			}
-			changed = subexprChanged || deadcodeChanged || constantFoldingChanged;
+			changed = changed || subexprChanged || deadcodeChanged;
 		}
 		LLVMDumpModule(m);
     }
