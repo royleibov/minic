@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <list>
 #include <vector>
+#include <string>
 using namespace std;
 
 #define DEBUGGING 1
@@ -554,6 +555,17 @@ int main(int argc, char** argv)
 			changed = changed || subexprChanged || deadcodeChanged;
 		}
 		LLVMDumpModule(m);
+
+		// Build output filename: strip .ll extension, append _optimized.ll
+		string inputName(argv[1]);
+		string outputName;
+		size_t extPos = inputName.rfind(".ll");
+		if (extPos != string::npos) {
+			outputName = inputName.substr(0, extPos) + "_optimized.ll";
+		} else {
+			outputName = inputName + "_optimized.ll";
+		}
+		LLVMPrintModuleToFile(m, outputName.c_str(), NULL);
     }
 
 	return 0;
