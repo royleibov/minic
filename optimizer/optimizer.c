@@ -378,7 +378,6 @@ int constantPropagation(LLVMModuleRef module) {
 					}
 
 					dataflow.genSet.insert(inst);
-					allStores.insert(inst);
 				}
 			}
 		}
@@ -415,7 +414,7 @@ int constantPropagation(LLVMModuleRef module) {
 						LLVMBasicBlockRef succ = LLVMGetSuccessor(terminator, i);
 
 						BBDataflow& succDataflow = bbDataflows[succ];
-						succDataflow.inSet.insert(dataflow.outSet.begin(), dataflow.outSet.end());
+						succDataflow.inSet.insert(dataflow.outSet.begin(), dataflow.outSet.end()); // Union with STL magic
 					}
 				}
 			}
@@ -519,6 +518,224 @@ int constantPropagation(LLVMModuleRef module) {
 	else return 0; // No changes made
 }
 
+// ---- Global live variable analysis ----
+
+// To perform live variable analysis, we need to propagate backwards (using IN, OUT, GEN, and KILL sets)
+// load instructions. At every store instruction (in reverse order), we check if any reaching loads uses the
+// stored value. If none do, then the store is dead code and can be eliminated.
+
+// Compute GEN and KILL sets for every block:
+// GEN set:
+// - Iterate through instructions in the block in order
+// - For every load instruction, add it to GEN set
+// - For every store instruction, check if it kills any previous loads in GEN set (i.e, stores to the same address).
+// 	If so, remove those loads from GEN set. Note that a store can only kill loads to the same address.
+
+// KILL set:
+// - Compute a global allLoads set for the entire function (can be done in the same iteration as GEN set computation)
+// - Iterate through instructions in the block in order
+// - For every store instruction "I", add all loads in allLoads that get killed by "I" (i.e. both refer to the same address)
+
+// Iteratively compute IN and OUT sets until convergence:
+// - Initialize OUT[B] = empty, and IN[B] = GEN[B] for every block B
+// - change = true (until fixed-point reached)
+// - while (change):
+// 	- change = false
+// 	- for each block B:
+// 		- OUT[B] = U IN[S] for all successors S of B
+// 		- oldIn = IN[B]
+// 		- IN[B] = GEN[B] U (OUT[B] - KILL[B])
+// 		- if IN[B] != oldIn:
+// 			- change = true
+
+// After convergence, delete dead stores:
+// - For each block B:
+// 	- Create set L = OUT[B]
+// 	- Walk through instructions in reverse order. For each instruction "I":
+// 		- If "I" is a load instruction, add it to L
+// 		- If "I" is a store instruction to address %x:
+// 			- Check if any load in L loads from address %x.
+// 				- If none, "I" is dead code and is marked for deletion
+// 				- If some do, "I" is live code and should not be deleted.
+// 					Remove from L any load that gets killed by "I" (the store satisfies those loads, so they are no longer live after this store)
+// 	- Delete all instructions marked for deletion
+
+
+int liveVarAnalysis(LLVMModuleRef module) {
+	bool changed = false;
+
+	// Walk through functions, basic blocks, and instructions
+	for (LLVMValueRef function =  LLVMGetFirstFunction(module); 
+			function; 
+			function = LLVMGetNextFunction(function)) {
+
+		unordered_set<LLVMValueRef> allLoads; // set of all load instructions in the function
+		unordered_map<LLVMBasicBlockRef, unordered_set<LLVMBasicBlockRef>> succToPreds; // map from successor block to its predecessor blocks (for reverse traversal)
+		for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(function);
+			bb;
+			bb = LLVMGetNextBasicBlock(bb)) {
+			
+			for (LLVMValueRef inst = LLVMGetFirstInstruction(bb); 
+				inst;
+				inst = LLVMGetNextInstruction(inst)) {
+				
+				if (LLVMIsALoadInst(inst)) {
+					allLoads.insert(inst);
+				}
+			}
+
+			// Populate succToPreds map. Important 
+			LLVMValueRef terminator = LLVMGetBasicBlockTerminator(bb);
+			unsigned numSuccessors = LLVMGetNumSuccessors(terminator);
+			for (unsigned i = 0; i < numSuccessors; i++) {
+				LLVMBasicBlockRef succ = LLVMGetSuccessor(terminator, i);
+				succToPreds[succ].insert(bb);
+			}
+		}
+
+		unordered_map<LLVMBasicBlockRef, BBDataflow> bbDataflows; // map from basic block to its dataflow sets
+
+		// Compute GEN and KILL sets for each basic block
+		for (LLVMBasicBlockRef basicBlock = LLVMGetFirstBasicBlock(function);
+ 			 basicBlock;
+  			 basicBlock = LLVMGetNextBasicBlock(basicBlock)) {
+			
+			BBDataflow& dataflow = bbDataflows[basicBlock];
+
+			// Walk through instructions in reverse order to compute GEN and KILL sets
+			for (LLVMValueRef inst = LLVMGetLastInstruction(basicBlock); inst;
+  					inst = LLVMGetPreviousInstruction(inst)) {
+
+				if (LLVMIsALoadInst(inst)) {
+					dataflow.genSet.insert(inst); // GEN set
+				} else if (LLVMIsAStoreInst(inst)) {
+					LLVMValueRef storeAddr = LLVMGetOperand(inst, 1); // Store
+
+					// Check if this store kills any previous loads in the gen set, if so, remove them from gen set
+					for (auto it = dataflow.genSet.begin(); it != dataflow.genSet.end(); ) {
+						LLVMValueRef genLoad = *it;
+						LLVMValueRef genLoadAddr = LLVMGetOperand(genLoad, 0);
+						if (operandsEqual(storeAddr, genLoadAddr)) {
+							it = dataflow.genSet.erase(it);  // erase returns iterator to next element
+						} else {
+							++it;  // only increment if we didn't erase
+						}
+					}
+
+					// Check if this store kills any loads to the same address
+					for (LLVMValueRef load : allLoads) {
+						LLVMValueRef loadAddr = LLVMGetOperand(load, 0);
+						if (operandsEqual(storeAddr, loadAddr)) {
+							dataflow.killSet.insert(load); // KILL set
+						}
+					}
+				}
+			}
+		}
+
+		// Iteratively compute IN and OUT sets until convergence
+		bool setsChanged = true;
+		while (setsChanged) {
+			setsChanged = false;
+
+			// Traverse basic block in any order
+			for (LLVMBasicBlockRef basicBlock = LLVMGetFirstBasicBlock(function);
+ 			 basicBlock;
+  			 basicBlock = LLVMGetNextBasicBlock(basicBlock)) {
+
+				BBDataflow& dataflow = bbDataflows[basicBlock];
+
+				unordered_set<LLVMValueRef> oldInSet = dataflow.inSet;
+
+				// IN[B] = GEN[B] U (OUT[B] - KILL[B])
+				unordered_set<LLVMValueRef> newInSet = dataflow.genSet;
+				for (LLVMValueRef outLoad : dataflow.outSet) {
+					if (dataflow.killSet.find(outLoad) == dataflow.killSet.end()) {
+						newInSet.insert(outLoad);
+					}
+				}
+				dataflow.inSet = newInSet;
+
+				if (dataflow.inSet != oldInSet) {
+					setsChanged = true;
+
+					// Push change to predecessors: OUT[P] = U IN[S] for all successors S of predecessor P
+					for (LLVMBasicBlockRef pred : succToPreds[basicBlock]) {
+						BBDataflow& predDataflow = bbDataflows[pred];
+						predDataflow.outSet.insert(dataflow.inSet.begin(), dataflow.inSet.end()); // Union with STL magic
+					}
+				}
+			}
+		}
+
+		// After convergence, delete dead stores
+		for (LLVMBasicBlockRef basicBlock = LLVMGetFirstBasicBlock(function);
+			 basicBlock;
+			 basicBlock = LLVMGetNextBasicBlock(basicBlock)) {
+			
+			BBDataflow& dataflow = bbDataflows[basicBlock];
+			unordered_set<LLVMValueRef> L = dataflow.outSet;
+
+			list<LLVMValueRef> toDelete; // List of instructions to delete after iteration
+
+			// Walk through instructions in reverse order
+			for (LLVMValueRef inst = LLVMGetLastInstruction(basicBlock); inst;
+				inst = LLVMGetPreviousInstruction(inst)) {
+
+				if (LLVMIsALoadInst(inst)) {
+					L.insert(inst); // Add load to L
+				} else if (LLVMIsAStoreInst(inst)) {
+					LLVMValueRef storeAddr = LLVMGetOperand(inst, 1); // Store
+
+					// Check if any load in L loads from the same address
+					bool hasMatchingLoad = false;
+					for (LLVMValueRef load : L) {
+						LLVMValueRef loadAddr = LLVMGetOperand(load, 0);
+						if (operandsEqual(storeAddr, loadAddr)) {
+							hasMatchingLoad = true;
+							break;
+						}
+					}
+
+					if (!hasMatchingLoad) {
+						changed = true;
+						toDelete.push_back(inst); // Mark store for deletion
+						if (DEBUGGING) {
+							printf("Found dead store:\n");
+							LLVMDumpValue(inst);
+							printf("\n");
+						}
+					} else {
+						// Remove from L any load that gets killed by this store
+						for (auto it = L.begin(); it != L.end(); ) {
+							LLVMValueRef load = *it;
+							LLVMValueRef loadAddr = LLVMGetOperand(load, 0);
+							if (operandsEqual(storeAddr, loadAddr)) {
+								it = L.erase(it); // erase returns iterator to next element
+							} else {
+								++it; // only increment if we didn't erase
+							}
+						}
+					}
+				}
+			}
+
+			// Delete instructions marked for deletion
+			for (LLVMValueRef inst : toDelete) {
+				LLVMInstructionEraseFromParent(inst);
+			}
+			if (DEBUGGING && !toDelete.empty()) {
+				printf("New Basic Block after live variable analysis:\n");
+				LLVMDumpValue(LLVMBasicBlockAsValue(basicBlock));
+			}
+		}
+	}
+
+	if (changed) return 1; // Indicate that we made changes
+	else return 0; // No changes made
+}
+		
+
 int main(int argc, char** argv)
 {
 	LLVMModuleRef m;
@@ -554,6 +771,9 @@ int main(int argc, char** argv)
 			}
 			changed = changed || subexprChanged || deadcodeChanged;
 		}
+		int liveVarAnalysisChanged = liveVarAnalysis(m);
+		printf("Live variable analysis made changes: %s\n", liveVarAnalysisChanged ? "Yes" : "No");
+
 		LLVMDumpModule(m);
 
 		// Build output filename: strip .ll extension, append _optimized.ll
